@@ -1,3 +1,3 @@
-module github.com/tomnomnom/waybackurls
+module github.com/s0kil/waybackurls
 
-go 1.18
+go 1.24

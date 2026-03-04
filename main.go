@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -15,7 +15,6 @@ import (
 )
 
 func main() {
-
 	var domains []string
 
 	var dates bool
@@ -33,7 +32,6 @@ func main() {
 		// fetch for a single domain
 		domains = []string{flag.Arg(0)}
 	} else {
-
 		// fetch for all domains from stdin
 		sc := bufio.NewScanner(os.Stdin)
 		for sc.Scan() {
@@ -47,7 +45,6 @@ func main() {
 
 	// get-versions mode
 	if getVersionsFlag {
-
 		for _, u := range domains {
 			versions, err := getVersions(u)
 			if err != nil {
@@ -55,7 +52,6 @@ func main() {
 			}
 			fmt.Println(strings.Join(versions, "\n"))
 		}
-
 		return
 	}
 
@@ -66,7 +62,6 @@ func main() {
 	}
 
 	for _, domain := range domains {
-
 		var wg sync.WaitGroup
 		wurls := make(chan wurl)
 
@@ -101,20 +96,17 @@ func main() {
 			seen[w.url] = true
 
 			if dates {
-
 				d, err := time.Parse("20060102150405", w.date)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "failed to parse date [%s] for URL [%s]\n", w.date, w.url)
+					continue
 				}
-
 				fmt.Printf("%s %s\n", d.Format(time.RFC3339), w.url)
-
 			} else {
 				fmt.Println(w.url)
 			}
 		}
 	}
-
 }
 
 type wurl struct {
@@ -130,22 +122,24 @@ func getWaybackURLs(domain string, noSubs bool) ([]wurl, error) {
 		subsWildcard = ""
 	}
 
-	res, err := http.Get(
+	client := &http.Client{Timeout: 60 * time.Second}
+	res, err := client.Get(
 		fmt.Sprintf("http://web.archive.org/cdx/search/cdx?url=%s%s/*&output=json&collapse=urlkey", subsWildcard, domain),
 	)
 	if err != nil {
-		return []wurl{}, err
+		return nil, err
 	}
+	defer res.Body.Close()
 
-	raw, err := ioutil.ReadAll(res.Body)
-
-	res.Body.Close()
+	raw, err := io.ReadAll(res.Body)
 	if err != nil {
-		return []wurl{}, err
+		return nil, err
 	}
 
 	var wrapper [][]string
-	err = json.Unmarshal(raw, &wrapper)
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return nil, err
+	}
 
 	out := make([]wurl, 0, len(wrapper))
 
@@ -161,7 +155,6 @@ func getWaybackURLs(domain string, noSubs bool) ([]wurl, error) {
 	}
 
 	return out, nil
-
 }
 
 func getCommonCrawlURLs(domain string, noSubs bool) ([]wurl, error) {
@@ -170,35 +163,36 @@ func getCommonCrawlURLs(domain string, noSubs bool) ([]wurl, error) {
 		subsWildcard = ""
 	}
 
-	res, err := http.Get(
+	client := &http.Client{Timeout: 60 * time.Second}
+	res, err := client.Get(
 		fmt.Sprintf("http://index.commoncrawl.org/CC-MAIN-2018-22-index?url=%s%s/*&output=json", subsWildcard, domain),
 	)
 	if err != nil {
-		return []wurl{}, err
+		return nil, err
 	}
-
 	defer res.Body.Close()
-	sc := bufio.NewScanner(res.Body)
 
+	sc := bufio.NewScanner(res.Body)
 	out := make([]wurl, 0)
 
 	for sc.Scan() {
-
 		wrapper := struct {
 			URL       string `json:"url"`
 			Timestamp string `json:"timestamp"`
 		}{}
-		err = json.Unmarshal([]byte(sc.Text()), &wrapper)
 
-		if err != nil {
+		if err := json.Unmarshal([]byte(sc.Text()), &wrapper); err != nil {
 			continue
 		}
 
 		out = append(out, wurl{date: wrapper.Timestamp, url: wrapper.URL})
 	}
 
-	return out, nil
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
 
+	return out, nil
 }
 
 func getVirusTotalURLs(domain string, noSubs bool) ([]wurl, error) {
@@ -217,9 +211,10 @@ func getVirusTotalURLs(domain string, noSubs bool) ([]wurl, error) {
 		domain,
 	)
 
-	resp, err := http.Get(fetchURL)
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Get(fetchURL)
 	if err != nil {
-		return out, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
@@ -232,53 +227,51 @@ func getVirusTotalURLs(domain string, noSubs bool) ([]wurl, error) {
 	}{}
 
 	dec := json.NewDecoder(resp.Body)
-
-	err = dec.Decode(&wrapper)
+	if err := dec.Decode(&wrapper); err != nil {
+		return nil, err
+	}
 
 	for _, u := range wrapper.URLs {
 		out = append(out, wurl{url: u.URL})
 	}
 
 	return out, nil
-
 }
 
-func isSubdomain(rawUrl, domain string) bool {
-	u, err := url.Parse(rawUrl)
+func isSubdomain(rawURL, domain string) bool {
+	u, err := url.Parse(rawURL)
 	if err != nil {
 		// we can't parse the URL so just
 		// err on the side of including it in output
 		return false
 	}
 
-	return strings.ToLower(u.Hostname()) != strings.ToLower(domain)
+	return !strings.EqualFold(u.Hostname(), domain)
 }
 
 func getVersions(u string) ([]string, error) {
 	out := make([]string, 0)
 
-	resp, err := http.Get(fmt.Sprintf(
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Get(fmt.Sprintf(
 		"http://web.archive.org/cdx/search/cdx?url=%s&output=json", u,
 	))
-
 	if err != nil {
-		return out, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	r := [][]string{}
 
 	dec := json.NewDecoder(resp.Body)
-
-	err = dec.Decode(&r)
-	if err != nil {
-		return out, err
+	if err := dec.Decode(&r); err != nil {
+		return nil, err
 	}
 
 	first := true
 	seen := make(map[string]bool)
-	for _, s := range r {
 
+	for _, s := range r {
 		// skip the first element, it's the field names
 		if first {
 			first = false

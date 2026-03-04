@@ -1,5 +1,5 @@
 #!/bin/bash
-PROJDIR=$(cd `dirname $0`/.. && pwd)
+PROJDIR=$(cd $(dirname $0)/.. && pwd)
 
 VERSION="${1}"
 TAG="v${VERSION}"
@@ -60,4 +60,3 @@ done
 
 gh release create ${TAG} ${FILELIST}
 rm ${FILELIST}
-
